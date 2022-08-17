@@ -3,25 +3,25 @@
 
 namespace FSUIPC {
 
-// https://github.com/nodejs/nan/blob/v2.8.0/nan.h#L1504
+// https://github.com/nodejs/nan/blob/v2.8.0/napi.h#L1504
 class PromiseWorker {
  public:
   explicit PromiseWorker() : errmsg_(NULL) {
     request.data = this;
 
-    Nan::HandleScope scope;
+    Napi::HandleScope scope(Napi::Env env);
 
     resolver.Reset(
-        v8::Promise::Resolver::New(Nan::GetCurrentContext()).ToLocalChecked());
+        v8::Promise::Resolver::New(Isolate::GetCurrentContext()));
 
-    v8::Local<v8::Object> obj = Nan::New<v8::Object>();
+    Napi::Object obj = Napi::Object::New(env);
     persistentHandle.Reset(obj);
 
-    async_resource = new Nan::AsyncResource("PromiseWorker", obj);
+    async_resource = new Napi::AsyncResource("PromiseWorker", obj);
   }
 
   virtual ~PromiseWorker() {
-    Nan::HandleScope scope;
+    Napi::HandleScope scope(Napi::Env env);
 
     if (!persistentHandle.IsEmpty())
       persistentHandle.Reset();
@@ -33,61 +33,63 @@ class PromiseWorker {
   }
 
   virtual void WorkComplete() {
-    Nan::HandleScope scope;
+    Napi::HandleScope scope(Napi::Env env);
 
     if (errmsg_ == NULL)
-      HandleOKCallback();
+      OnOK();
     else
-      HandleErrorCallback();
+      OnError();
 
     // KickNextTick(), which will make sure our promises work even with
     // setTimeout or setInterval See https://github.com/nodejs/nan/issues/539
-    Nan::Callback(Nan::New<v8::Function>(
-                      [](const Nan::FunctionCallbackInfo<v8::Value>& info) {},
-                      Nan::Null()))
+    Napi::FunctionReference(Napi::Function::New(env, 
+                      [](const Napi::CallbackInfo& info) {
+Napi::Env env = info.Env();
+},
+                      env.Null()))
         .Call(0, nullptr, async_resource);
   }
 
   inline void SaveToPersistent(const char* key,
-                               const v8::Local<v8::Value>& value) {
-    Nan::HandleScope scope;
-    Nan::New(persistentHandle)
-        ->Set(Nan::GetCurrentContext(), Nan::New(key).ToLocalChecked(), value);
+                               const Napi::Value& value) {
+    Napi::HandleScope scope(Napi::Env env);
+    Napi::New(env, persistentHandle)
+        .Set(Napi::GetCurrentContext(), Napi::New(env, key), value);
   }
 
-  inline void SaveToPersistent(const v8::Local<v8::String>& key,
-                               const v8::Local<v8::Value>& value) {
-    Nan::HandleScope scope;
-    Nan::New(persistentHandle)->Set(Nan::GetCurrentContext(), key, value);
+  inline void SaveToPersistent(const Napi::String& key,
+                               const Napi::Value& value) {
+    Napi::HandleScope scope(Napi::Env env);
+    Napi::New(env, persistentHandle).Set(Napi::GetCurrentContext(), key, value);
   }
 
   inline void SaveToPersistent(uint32_t index,
-                               const v8::Local<v8::Value>& value) {
-    Nan::HandleScope scope;
-    Nan::New(persistentHandle)->Set(Nan::GetCurrentContext(), index, value);
+                               const Napi::Value& value) {
+    Napi::HandleScope scope(Napi::Env env);
+    Napi::New(env, persistentHandle).Set(Napi::GetCurrentContext(), index, value);
   }
 
-  inline v8::Local<v8::Value> GetFromPersistent(const char* key) const {
-    Nan::EscapableHandleScope scope;
+  inline Napi::Value GetFromPersistent(const char* key) const {
+    Napi::HandleScope scope(Napi::Env env);
     return scope.Escape(
-        Nan::New(persistentHandle)
-            ->Get(Nan::GetCurrentContext(), Nan::New(key).ToLocalChecked())
-            .ToLocalChecked());
+        Napi::New(env, persistentHandle)
+            ->Get(Napi::GetCurrentContext(), Napi::New(env, key))
+            );
   }
 
-  inline v8::Local<v8::Value> GetFromPersistent(
-      const v8::Local<v8::String>& key) const {
-    Nan::EscapableHandleScope scope;
-    return scope.Escape(Nan::New(persistentHandle)
-                            ->Get(Nan::GetCurrentContext(), key)
-                            .ToLocalChecked());
+  inline Napi::Value GetFromPersistent(
+      const Napi::String& key) const {
+    Napi::HandleScope scope(Napi::Env env);
+    return scope.Escape(Napi::New(env, persistentHandle)
+                            ->Get(Napi::GetCurrentContext(), key)
+                            );
   }
 
-  inline v8::Local<v8::Value> GetFromPersistent(uint32_t index) const {
-    Nan::EscapableHandleScope scope;
-    return scope.Escape(Nan::New(persistentHandle)
-                            ->Get(Nan::GetCurrentContext(), index)
-                            .ToLocalChecked());
+  inline Napi::Value GetFromPersistent(uint32_t index) const {
+    Napi::HandleScope scope(Napi::Env env);
+    return scope.Escape(Napi::New(env, persistentHandle)
+                            ->Get(Napi::GetCurrentContext(), index)
+                            );
   }
 
   virtual void Execute() = 0;
@@ -97,28 +99,28 @@ class PromiseWorker {
   virtual void Destroy() { delete this; }
 
   v8::Local<v8::Promise> GetPromise() {
-    Nan::EscapableHandleScope scope;
-    return scope.Escape(Nan::New(resolver)->GetPromise());
+    Napi::HandleScope scope(Napi::Env env);
+    return scope.Escape(Napi::New(env, resolver)->GetPromise());
   }
 
  protected:
-  Nan::Persistent<v8::Object> persistentHandle;
-  Nan::Persistent<v8::Promise::Resolver> resolver;
-  Nan::AsyncResource* async_resource;
+  Napi::Persistent<v8::Object> persistentHandle;
+  Napi::Persistent<v8::Promise::Resolver> resolver;
+  Napi::AsyncResource* async_resource;
 
-  virtual void HandleOKCallback() {
-    Nan::HandleScope scope;
+  virtual void OnOK() {
+    Napi::HandleScope scope(Napi::Env env);
 
-    Nan::New(resolver)->Resolve(Nan::GetCurrentContext(), Nan::Undefined());
+    Napi::New(env, resolver)->Resolve(Napi::GetCurrentContext(), env.Undefined());
   }
 
-  virtual void HandleErrorCallback() {
-    Nan::HandleScope scope;
+  virtual void OnError() {
+    Napi::HandleScope scope(Napi::Env env);
 
-    Nan::New(resolver)->Reject(
-        Nan::GetCurrentContext(),
+    Napi::New(env, resolver)->Reject(
+        Napi::GetCurrentContext(),
         v8::Exception::Error(
-            Nan::New<v8::String>(ErrorMessage()).ToLocalChecked()));
+            Napi::String::New(env, ErrorMessage())));
   }
 
   void SetErrorMessage(const char* msg) {
@@ -132,7 +134,7 @@ class PromiseWorker {
   const char* ErrorMessage() const { return errmsg_; }
 
  private:
-  NAN_DISALLOW_ASSIGN_COPY_MOVE(PromiseWorker)
+  int NAN_DISALLOW_ASSIGN_COPY_MOVE(PromiseWorker);
   char* errmsg_;
 };
 

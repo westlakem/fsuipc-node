@@ -1,7 +1,8 @@
 #ifndef FSUIPC_H
 #define FSUIPC_H
 
-#include <nan.h>
+#include <napi.h>
+#include <uv.h>
 
 #include <map>
 #include <mutex>
@@ -28,9 +29,9 @@ enum class Type {
   BitArray,
 };
 
-NAN_MODULE_INIT(InitType);
-NAN_MODULE_INIT(InitError);
-NAN_MODULE_INIT(InitSimulator);
+Napi::Object InitType(Napi::Env env, Napi::Object exports);
+Napi::Object InitError(Napi::Env env, Napi::Object exports);
+Napi::Object InitSimulator(Napi::Env env, Napi::Object exports);
 
 DWORD get_size_of_type(Type type);
 
@@ -50,24 +51,24 @@ struct OffsetWrite {
 };
 
 // https://medium.com/netscape/tutorial-building-native-c-modules-for-node-js-using-nan-part-1-755b07389c7c
-class FSUIPC : public Nan::ObjectWrap {
+class FSUIPC : public Napi::ObjectWrap<FSUIPC> {
   friend class ProcessAsyncWorker;
   friend class OpenAsyncWorker;
   friend class CloseAsyncWorker;
 
  public:
-  static NAN_MODULE_INIT(Init);
+  static void Init(Napi::Env env, Napi::Object exports);
 
-  static NAN_METHOD(New);
-  static NAN_METHOD(Open);
-  static NAN_METHOD(Close);
+  static Napi::Value New(const Napi::CallbackInfo& info);
+  static Napi::Value Open(const Napi::CallbackInfo& info);
+  static Napi::Value Close(const Napi::CallbackInfo& info);
 
-  static NAN_METHOD(Process);
-  static NAN_METHOD(Add);
-  static NAN_METHOD(Remove);
-  static NAN_METHOD(Write);
+  static Napi::Value Process(const Napi::CallbackInfo& info);
+  static Napi::Value Add(const Napi::CallbackInfo& info);
+  static Napi::Value Remove(const Napi::CallbackInfo& info);
+  static Napi::Value Write(const Napi::CallbackInfo& info);
 
-  static Nan::Persistent<v8::FunctionTemplate> constructor;
+  static Napi::FunctionReference constructor;
 
   ~FSUIPC() {
     if (this->ipc) {
@@ -93,10 +94,10 @@ class ProcessAsyncWorker : public PromiseWorker {
 
   void Execute();
 
-  void HandleOKCallback();
-  void HandleErrorCallback();
+  void OnOK();
+  void OnError();
 
-  v8::Local<v8::Value> GetValue(Type type, void* data, size_t length);
+  Napi::Value GetValue(Type type, void* data, size_t length);
 
  private:
   int errorCode;
@@ -113,8 +114,8 @@ class OpenAsyncWorker : public PromiseWorker {
 
   void Execute();
 
-  void HandleOKCallback();
-  void HandleErrorCallback();
+  void OnOK();
+  void OnError();
 
  private:
   Simulator requestedSim;
@@ -129,7 +130,7 @@ class CloseAsyncWorker : public PromiseWorker {
 
   void Execute();
 
-  void HandleOKCallback();
+  void OnOK();
 };
 
 }  // namespace FSUIPC

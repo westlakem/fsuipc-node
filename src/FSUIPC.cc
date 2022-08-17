@@ -1,9 +1,11 @@
 // fsuipc.cc
 #include "FSUIPC.h"
 
-#include <nan.h>
-#include <node.h>
+#include <napi.h>
+#include <uv.h>
 #include <windows.h>
+
+#include <v8.h>
 
 #include <string>
 
@@ -11,220 +13,230 @@
 
 namespace FSUIPC {
 
-Nan::Persistent<v8::FunctionTemplate> FSUIPC::constructor;
-Nan::Persistent<v8::Object> FSUIPCError;
+Napi::FunctionReference FSUIPC::constructor;
+Napi::Object error = Napi::Persistent(FSUIPCError);
 
-NAN_MODULE_INIT(FSUIPC::Init) {
-  v8::Local<v8::FunctionTemplate> ctor =
-      Nan::New<v8::FunctionTemplate>(FSUIPC::New);
-  constructor.Reset(ctor);
-  ctor->InstanceTemplate()->SetInternalFieldCount(1);
-  ctor->SetClassName(Nan::New("FSUIPC").ToLocalChecked());
+// class FSUIPC : public Napi::Addon<FSUIPC> {
+//  public:
+// FSUIPC(Napi::Env env, Napi::Object exports) {
+//   DefineAddon(exports, {InstanceMethod("open", &FSUIPC::Open),
+//                         InstanceMethod("close", &FSUIPC::Close),
+//                         InstanceMethod("process", &FSUIPC::Process),
+//                         InstanceMethod("add", &FSUIPC::Add),
+//                         InstanceMethod("remove", &FSUIPC::Remove),
+//                         InstanceMethod("write", &FSUIPC::Write)});
+// }
 
-  Nan::SetPrototypeMethod(ctor, "open", Open);
-  Nan::SetPrototypeMethod(ctor, "close", Close);
+void FSUIPC::Init(Napi::Env env, Napi::Object exports) {
+  Napi::Function fsuipcNew = Napi::Function::New(env, FSUIPC::New);
+  Napi::FunctionReference ctor = Napi::Persistent(fsuipcNew);
 
-  Nan::SetPrototypeMethod(ctor, "process", Process);
+  constructor.Reset(fsuipcNew);
 
-  Nan::SetPrototypeMethod(ctor, "add", Add);
-  Nan::SetPrototypeMethod(ctor, "remove", Remove);
+  Napi::Function tpl = DefineClass(env, "FSUIPC",
+                                   {InstanceMethod("open", &FSUIPC::Open, nai),
+                                    InstanceMethod("close", &FSUIPC::Close),
+                                    InstanceMethod("process", &FSUIPC::Process),
+                                    InstanceMethod("add", &FSUIPC::Add),
+                                    InstanceMethod("remove", &FSUIPC::Remove),
+                                    InstanceMethod("write", &FSUIPC::Write)}););
 
-  Nan::SetPrototypeMethod(ctor, "write", Write);
+  Napi::FunctionReference* constructor = new Napi::FunctionReference();
+  *constructor = Napi::Persistent(tpl);
+  env.SetInstanceData(constructor);
 
-  target->Set(Nan::GetCurrentContext(), Nan::New("FSUIPC").ToLocalChecked(),
-              ctor->GetFunction(Nan::GetCurrentContext()).ToLocalChecked());
+  exports.Set("FSUIPC", tpl);
 }
 
-NAN_METHOD(FSUIPC::New) {
+Napi::Value FSUIPC::New(const Napi::CallbackInfo& info) {
   // throw an error if constructor is called without new keyword
+  Napi::Env env = Napi::Env(env);
   if (!info.IsConstructCall()) {
-    return Nan::ThrowError(
-        Nan::New("FSUIPC.new - called without new keyword").ToLocalChecked());
+    return Napi::Error::New(env, "FSUIPC.new - called without new keyword")
+        .Value();
   }
 
   if (info.Length() != 0) {
-    return Nan::ThrowError(
-        Nan::New("FSUIPC.new - expected no arguments").ToLocalChecked());
+    return Napi::Error::New(env, "FSUIPC.new - expected no arguments").Value();
   }
 
   FSUIPC* fsuipc = new FSUIPC();
   fsuipc->ipc = new IPCUser();
-  fsuipc->Wrap(info.Holder());
 
-  info.GetReturnValue().Set(info.Holder());
+  return Napi::Value();
 }
 
-NAN_METHOD(FSUIPC::Open) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
-
+Napi::Value FSUIPC::Open(const Napi::CallbackInfo& info) {
+  FSUIPC* self = this;
+  Napi::Env env = Napi::Env(env);
   Simulator requestedSim = Simulator::ANY;
 
   if (info.Length() > 0) {
-    if (!info[0]->IsUint32()) {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.open - expected first argument to be Simulator")
-              .ToLocalChecked());
+    if (!info[0].IsNumber()) {
+      return Napi::Error::New(
+                 env, "FSUIPC.open - expected first argument to be Simulator")
+          .Value();
     }
 
-    requestedSim = static_cast<Simulator>(
-        info[0]->Uint32Value(Nan::GetCurrentContext()).ToChecked());
+    requestedSim = static_cast<Simulator>(info[0].ToNumber().Int32Value());
   }
 
   auto worker = new OpenAsyncWorker(self, requestedSim);
 
   PromiseQueueWorker(worker);
 
-  info.GetReturnValue().Set(worker->GetPromise());
+  return worker->GetPromise();
 }
 
-NAN_METHOD(FSUIPC::Close) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
+Napi::Value FSUIPC::Close(const Napi::CallbackInfo& info) {
+  FSUIPC* self = this;
 
   auto worker = new CloseAsyncWorker(self);
 
   PromiseQueueWorker(worker);
 
-  info.GetReturnValue().Set(worker->GetPromise());
+  return worker->GetPromise();
 }
 
-NAN_METHOD(FSUIPC::Process) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
+Napi::Value FSUIPC::Process(const Napi::CallbackInfo& info) {
+  FSUIPC* self = this;
 
   auto worker = new ProcessAsyncWorker(self);
 
   PromiseQueueWorker(worker);
 
-  info.GetReturnValue().Set(worker->GetPromise());
+  return worker->GetPromise();
 }
 
-NAN_METHOD(FSUIPC::Add) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
+Napi::Value FSUIPC::Add(const Napi::CallbackInfo& info) {
+  Napi::Env env = Napi::Env(env);
+  FSUIPC* self = this;
 
   if (info.Length() < 3) {
-    return Nan::ThrowError(
-        Nan::New("FSUIPC.Add: requires at least 3 arguments").ToLocalChecked());
+    return Napi::Error::New(env, "FSUIPC.Add: requires at least 3 arguments")
+        .Value();
   }
 
-  if (!info[0]->IsString()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Add: expected first argument to be string")
-            .ToLocalChecked());
+  if (!info[0].IsString()) {
+    return Napi::TypeError::New(
+               env, "FSUIPC.Add: expected first argument to be string")
+        .Value();
   }
 
-  if (!info[1]->IsUint32()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Add: expected second argument to be uint")
-            .ToLocalChecked());
+  if (!info[1].IsNumber()) {
+    return Napi::TypeError::New(
+               env, "FSUIPC.Add: expected second argument to be uint")
+        .Value();
   }
 
-  if (!info[2]->IsInt32()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Add: expected third argument to be int")
-            .ToLocalChecked());
+  if (!info[2].IsNumber()) {
+    return Napi::TypeError::New(env,
+                                "FSUIPC.Add: expected third argument to be int")
+        .Value();
   }
 
-  std::string name = std::string(*Nan::Utf8String(info[0]));
-  DWORD offset = info[1]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
-  Type type = (Type)info[2]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+  std::string name =
+      std::string(info[0].As<Napi::String>().Utf8Value().c_str());
+  DWORD offset = info[1].ToNumber().Uint32Value();
+  Type type = (Type)info[2].ToNumber().Uint32Value();
 
   DWORD size;
 
   if (type == Type::ByteArray || type == Type::BitArray ||
       type == Type::String) {
     if (info.Length() < 4) {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.Add: requires at least 4 arguments if type is "
-                   "byteArray, bitArray or string")
-              .ToLocalChecked());
+      return Napi::TypeError::New(
+                 env,
+                 "FSUIPC.Add: requires at least 4 arguments if type is "
+                 "byteArray, bitArray or string")
+          .Value();
     }
 
-    if (!info[3]->IsUint32()) {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.Add: expected fourth argument to be uint")
-              .ToLocalChecked());
+    if (!info[3].ToNumber().Uint32Value()) {
+      return Napi::TypeError::New(
+                 env, "FSUIPC.Add: expected fourth argument to be uint")
+          .Value();
     }
 
-    size = (int)info[3]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
+    size = (int)info[3].ToNumber().Uint32Value();
   } else {
     size = get_size_of_type(type);
   }
 
   if (size == 0) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Add: expected fourth argument to be a size > 0")
-            .ToLocalChecked());
+    return Napi::TypeError::New(
+               env, "FSUIPC.Add: expected fourth argument to be a size > 0")
+        .Value();
   }
 
   self->offsets[name] = Offset{name, type, offset, size, malloc(size)};
 
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
+  Napi::Object obj = Napi::Object::New(env);
 
-  Nan::Set(obj, Nan::New("name").ToLocalChecked(),
-           Nan::New(name).ToLocalChecked());
-  Nan::Set(obj, Nan::New("offset").ToLocalChecked(), info[1]);
-  Nan::Set(obj, Nan::New("type").ToLocalChecked(), Nan::New((int)type));
-  Nan::Set(obj, Nan::New("size").ToLocalChecked(), Nan::New((int)size));
+  (obj).Set("name", name);
+  (obj).Set("offset", info[1]);
+  (obj).Set("type", (int)type);
+  (obj).Set("size", (int)size);
 
-  info.GetReturnValue().Set(obj);
+  return obj;
 }
 
-NAN_METHOD(FSUIPC::Remove) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
+Napi::Value FSUIPC::Remove(const Napi::CallbackInfo& info) {
+  Napi::Env env = Napi::Env(env);
+  FSUIPC* self = this;
 
   if (info.Length() != 1) {
-    return Nan::ThrowError(
-        Nan::New("FSUIPC.Remove: requires one argument").ToLocalChecked());
+    return Napi::TypeError::New(env, "FSUIPC.Remove: requires one argument")
+        .Value();
   }
 
-  if (!info[0]->IsString()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Remove: expected first argument to be string")
-            .ToLocalChecked());
+  if (!info[0].IsString()) {
+    return Napi::TypeError::New(
+               env, "FSUIPC.Remove: expected first argument to be string")
+        .Value();
   }
 
-  std::string name = std::string(*Nan::Utf8String(info[0]));
+  std::string name =
+      std::string(info[0].As<Napi::String>().Utf8Value().c_str());
 
   auto it = self->offsets.find(name);
 
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
+  Napi::Object obj = Napi::Object::New(env);
 
-  Nan::Set(obj, Nan::New("name").ToLocalChecked(),
-           Nan::New(it->second.name).ToLocalChecked());
-  Nan::Set(obj, Nan::New("offset").ToLocalChecked(),
-           Nan::New((int)it->second.offset));
-  Nan::Set(obj, Nan::New("type").ToLocalChecked(),
-           Nan::New((int)it->second.type));
-  Nan::Set(obj, Nan::New("size").ToLocalChecked(),
-           Nan::New((int)it->second.size));
+  (obj).Set("name", it->second.name);
+  (obj).Set("offset", it->second.offset);
+  (obj).Set("type", (int)it->second.type);
+  (obj).Set("size", (int)it->second.size);
 
   self->offsets.erase(it);
 
-  info.GetReturnValue().Set(obj);
+  return obj;
 }
 
-NAN_METHOD(FSUIPC::Write) {
-  FSUIPC* self = Nan::ObjectWrap::Unwrap<FSUIPC>(info.This());
+Napi::Value FSUIPC::Write(const Napi::CallbackInfo& info) {
+  Napi::Env env = Napi::Env(env);
+  FSUIPC* self = this;
 
   if (info.Length() < 3) {
-    return Nan::ThrowError(
-        Nan::New("FSUIPC.Write: requires at least 3 arguments")
-            .ToLocalChecked());
+    return Napi::TypeError::New(env,
+                                "FSUIPC.Write: requires at least 3 arguments")
+        .Value();
   }
 
-  if (!info[0]->IsUint32()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Write: expected first argument to be uint")
-            .ToLocalChecked());
+  if (!info[0].IsNumber()) {
+    return Napi::TypeError::New(
+               env, "FSUIPC.Write: expected first argument to be uint")
+        .Value();
   }
 
-  if (!info[1]->IsInt32()) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Write: expected second argument to be int")
-            .ToLocalChecked());
+  if (!info[1].IsNumber()) {
+    return Napi::TypeError::New(
+               env, "FSUIPC.Write: expected second argument to be int")
+        .Value();
   }
 
-  DWORD offset = info[0]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
-  Type type = (Type)info[1]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+  DWORD offset = info[0].ToNumber().Uint32Value();
+  Type type = (Type)info[1].ToNumber().Uint32Value();
 
   DWORD size;
   void* value;
@@ -232,34 +244,34 @@ NAN_METHOD(FSUIPC::Write) {
   if (type == Type::ByteArray || type == Type::BitArray ||
       type == Type::String) {
     if (info.Length() < 4) {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.Write: requires at least 4 arguments if type is "
-                   "byteArray, bitArray or string")
-              .ToLocalChecked());
+      return Napi::TypeError::New(
+                 env,
+                 "FSUIPC.Write: requires at least 4 arguments if type is "
+                 "byteArray, bitArray or string")
+          .Value();
     }
 
-    if (!info[2]->IsUint32()) {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.Write: expected third argument to be uint")
-              .ToLocalChecked());
+    if (!info[2].IsNumber()) {
+      return Napi::TypeError::New(
+                 env, "FSUIPC.Write: expected third argument to be uint")
+          .Value();
     }
 
-    size = (int)info[2]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
+    size = (int)info[2].ToNumber().Uint32Value();
   } else {
     size = get_size_of_type(type);
   }
 
   if (size == 0) {
-    return Nan::ThrowTypeError(
-        Nan::New("FSUIPC.Add: expected size to be > 0").ToLocalChecked());
+    return Napi::TypeError::New(env, "FSUIPC.Add: expected size to be > 0")
+        .Value();
   }
 
   value = malloc(size);
 
   switch (type) {
     case Type::Byte: {
-      uint8_t x =
-          (uint8_t)info[2]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
+      uint8_t x = (uint8_t)info[2].ToNumber().Uint32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -269,8 +281,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::SByte: {
-      int8_t x =
-          (int8_t)info[2]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+      int8_t x = (int8_t)info[2].ToNumber().Int32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -280,8 +291,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::Int16: {
-      int16_t x =
-          (int16_t)info[2]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+      int16_t x = (int16_t)info[2].ToNumber().Int32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -291,7 +301,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::Int32: {
-      int32_t x = info[2]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+      int32_t x = info[2].ToNumber().Int32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -301,8 +311,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::UInt16: {
-      uint16_t x =
-          (uint16_t)info[2]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
+      uint16_t x = (uint16_t)info[2].ToNumber().Uint32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -312,7 +321,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::UInt32: {
-      uint32_t x = info[2]->Uint32Value(Nan::GetCurrentContext()).ToChecked();
+      uint32_t x = info[2].ToNumber().Uint32Value();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -322,7 +331,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::Double: {
-      double x = info[2]->NumberValue(Nan::GetCurrentContext()).ToChecked();
+      double x = info[2].ToNumber().DoubleValue();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -332,8 +341,7 @@ NAN_METHOD(FSUIPC::Write) {
       break;
     }
     case Type::Single: {
-      float x =
-          (float)info[2]->NumberValue(Nan::GetCurrentContext()).ToChecked();
+      float x = (float)info[2].ToNumber().DoubleValue();
 
       std::copy(
           static_cast<const uint8_t*>(static_cast<const void*>(&x)),
@@ -345,16 +353,18 @@ NAN_METHOD(FSUIPC::Write) {
     case Type::Int64: {
       int64_t x;
 
-      if (info[3]->IsString()) {
-        std::string x_str = std::string(*Nan::Utf8String(info[3]));
+      if (info[3].IsString()) {
+        std::string x_str =
+            std::string(info[3].As<Napi::String>().Utf8Value().c_str());
         x = std::stoll(x_str);
-      } else if (info[3]->IsInt32()) {
-        x = (int64_t)info[3]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+      } else if (info[3].IsNumber()) {
+        x = (int64_t)info[3].ToNumber().Int32Value();
       } else {
-        return Nan::ThrowTypeError(
-            Nan::New("FSUIPC.Write: expected fourth argument to be a string or "
-                     "int when type is int64")
-                .ToLocalChecked());
+        return Napi::TypeError::New(
+                   env,
+                   "FSUIPC.Write: expected fourth argument to be a string or "
+                   "int when type is int64")
+            .Value();
       }
 
       std::copy(
@@ -367,18 +377,18 @@ NAN_METHOD(FSUIPC::Write) {
     case Type::UInt64: {
       uint64_t x;
 
-      if (info[3]->IsString()) {
-        std::string x_str = std::string(*Nan::Utf8String(info[3]));
+      if (info[3].IsString()) {
+        std::string x_str =
+            std::string(info[3].As<Napi::String>().Utf8Value().c_str());
         x = std::stoll(x_str);
-      } else if (info[3]->IsUint32()) {
-        x = (uint64_t)info[3]
-                ->Uint32Value(Nan::GetCurrentContext())
-                .ToChecked();
+      } else if (info[3].IsNumber()) {
+        x = (uint64_t)info[3].ToNumber().Uint32Value();
       } else {
-        return Nan::ThrowTypeError(
-            Nan::New("FSUIPC.Write: expected fourth argument to be a string or "
-                     "int when type is uint64")
-                .ToLocalChecked());
+        return Napi::TypeError::New(
+                   env,
+                   "FSUIPC.Write: expected fourth argument to be a string or "
+                   "int when type is uint64")
+            .Value();
       }
 
       std::copy(
@@ -391,12 +401,14 @@ NAN_METHOD(FSUIPC::Write) {
     case Type::String: {
       std::memset(value, 0, size);
 
-      std::string x_str = std::string(*Nan::Utf8String(info[3]));
+      std::string x_str =
+          std::string(info[3].As<Napi::String>().Utf8Value().c_str());
       if (x_str.length() >= size) {
-        return Nan::ThrowTypeError(
-            Nan::New("FSUIPC.Write: expected string's length to be less than "
-                     "the supplied size")
-                .ToLocalChecked());
+        return Napi::TypeError::New(
+                   env,
+                   "FSUIPC.Write: expected string's length to be less than "
+                   "the supplied size")
+            .Value();
       }
 
       const char* x_c_str = x_str.c_str();
@@ -408,24 +420,25 @@ NAN_METHOD(FSUIPC::Write) {
     case Type::ByteArray: {
       std::memset(value, 0, size);
 
-      if (info[3]->IsArrayBuffer()) {
+      if (info[3].IsArrayBuffer()) {
         v8::Local<v8::ArrayBufferView> view =
-            v8::Local<v8::ArrayBufferView>::Cast(info[3]);
+            info[3].As<v8::Local<v8::ArrayBufferView>>();
 
         view->CopyContents(value, size);
       } else {
-        return Nan::ThrowTypeError(
-            Nan::New("FSUIPC.Write: expected to receive ArrayBufferView for "
-                     "byte array type")
-                .ToLocalChecked());
+        return Napi::TypeError::New(
+                   env,
+                   "FSUIPC.Write: expected to receive ArrayBufferView for "
+                   "byte array type")
+            .Value();
       }
 
       break;
     }
     default: {
-      return Nan::ThrowTypeError(
-          Nan::New("FSUIPC.Write: unsupported type for write")
-              .ToLocalChecked());
+      return Napi::TypeError::New(env,
+                                  "FSUIPC.Write: unsupported type for write")
+          .Value();
     }
   }
 
@@ -475,91 +488,92 @@ void ProcessAsyncWorker::Execute() {
   }
 }
 
-void ProcessAsyncWorker::HandleOKCallback() {
-  Nan::HandleScope scope;
+void ProcessAsyncWorker::OnOK() {
+  Napi::Env env = Napi::Env(env);
+  Napi::HandleScope scope(env);
 
   std::lock_guard<std::mutex> guard(this->fsuipc->offsets_mutex);
 
   auto offsets = this->fsuipc->offsets;
 
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
+  Napi::Object obj = Napi::Object::New(env);
   std::map<std::string, Offset>::iterator it = offsets.begin();
 
   for (; it != offsets.end(); ++it) {
-    Nan::Set(obj, Nan::New(it->second.name).ToLocalChecked(),
-             this->GetValue(it->second.type, it->second.dest, it->second.size));
+    (obj).Set(it->second.name, this->GetValue(it->second.type, it->second.dest,
+                                              it->second.size));
   }
 
-  Nan::New(resolver)->Resolve(Nan::GetCurrentContext(), obj);
+  resolver->Resolve(obj);
 }
 
-void ProcessAsyncWorker::HandleErrorCallback() {
-  Nan::HandleScope scope;
+void ProcessAsyncWorker::OnError() {
+  Napi::Env env = Napi::Env(env);
+  Napi::HandleScope scope(env);
 
-  v8::Local<v8::Value> argv[] = {Nan::New(ErrorMessage()).ToLocalChecked(),
-                                 Nan::New(this->errorCode)};
-  v8::Local<v8::Value> error =
-      Nan::CallAsConstructor(Nan::New(FSUIPCError), 2, argv).ToLocalChecked();
+  Napi::Value argv[] = {Napi::Value::From(env, ErrorMessage()),
+                        Napi::Value::From(env, this->errorCode)};
+  Napi::Value error = Napi::Error::New(env, ErrorMessage()).Value();
+  // Napi::CallAsConstructor(Napi::New(env, FSUIPCError), 2, argv);
 
-  Nan::New(resolver)->Reject(Nan::GetCurrentContext(), error);
+  resolver->Reject(error);
 }
 
-v8::Local<v8::Value> ProcessAsyncWorker::GetValue(Type type,
-                                                  void* data,
-                                                  size_t length) {
-  Nan::EscapableHandleScope scope;
+Napi::Value ProcessAsyncWorker::GetValue(Type type, void* data, size_t length) {
+  Napi::Env env = Napi::Env(env);
+  Napi::EscapableHandleScope scope(env);
 
   switch (type) {
     case Type::Byte:
-      return scope.Escape(Nan::New(*((uint8_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((uint8_t*)data)));
     case Type::SByte:
-      return scope.Escape(Nan::New(*((int8_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((int8_t*)data)));
     case Type::Int16:
-      return scope.Escape(Nan::New(*((int16_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((int16_t*)data)));
     case Type::Int32:
-      return scope.Escape(Nan::New(*((int32_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((int32_t*)data)));
     case Type::Int64:
       return scope.Escape(
-          Nan::New(std::to_string(*((int64_t*)data))).ToLocalChecked());
+          Napi::Value::From(env, std::to_string(*((int64_t*)data))));
     case Type::UInt16:
-      return scope.Escape(Nan::New(*((uint16_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((uint16_t*)data)));
     case Type::UInt32:
-      return scope.Escape(Nan::New(*((uint32_t*)data)));
+      return scope.Escape(Napi::Value::From(env, *((uint32_t*)data)));
     case Type::UInt64:
       return scope.Escape(
-          Nan::New(std::to_string(*((uint64_t*)data))).ToLocalChecked());
+          Napi::Value::From(env, std::to_string(*((uint64_t*)data))));
     case Type::Double:
-      return scope.Escape(Nan::New(*((double*)data)));
+      return scope.Escape(Napi::Value::From(env, *((double*)data)));
     case Type::Single:
-      return scope.Escape(Nan::New(*((float*)data)));
+      return scope.Escape(Napi::Value::From(env, *((float*)data)));
     case Type::String: {
       char* str = (char*)data;
-      return scope.Escape(Nan::New(str).ToLocalChecked());
+      return scope.Escape(Napi::Value::From(env, str));
     }
     case Type::BitArray: {
-      v8::Local<v8::Array> arr = Nan::New<v8::Array>(length * 8);
+      Napi::Array arr = Napi::Array::New(env, length * 8);
       uint8_t* bits = (uint8_t*)data;
       for (int i = 0; i < length * 8; i++) {
         int byte_index = i / 8;
         int bit_index = i % 8;
         int mask = 1 << bit_index;
         bool value = (bits[byte_index] & mask) != 0;
-        arr->Set(Nan::GetCurrentContext(), i, Nan::New(value));
+        arr.Set(i, value);
       }
       return scope.Escape(arr);
     }
     case Type::ByteArray: {
-      v8::Local<v8::Array> arr = Nan::New<v8::Array>(length);
+      Napi::Array arr = Napi::Array::New(env, length);
       uint8_t* bytes = (uint8_t*)data;
       for (int i = 0; i < length; i++) {
-        arr->Set(Nan::GetCurrentContext(), i, Nan::New(*bytes));
+        arr.Set(i, *bytes);
         bytes++;
       }
       return scope.Escape(arr);
     }
   }
 
-  return scope.Escape(Nan::Undefined());
+  return scope.Escape(env.Undefined());
 }
 
 DWORD get_size_of_type(Type type) {
@@ -596,21 +610,22 @@ void OpenAsyncWorker::Execute() {
   }
 }
 
-void OpenAsyncWorker::HandleOKCallback() {
-  Nan::HandleScope scope;
+void OpenAsyncWorker::OnOK() {
+  Napi::Env env = Napi::Env(env);
+  Napi::HandleScope scope(env);
 
-  Nan::New(resolver)->Resolve(Nan::GetCurrentContext(), this->fsuipc->handle());
+  resolver->Resolve(this->fsuipc->handle());
 }
 
-void OpenAsyncWorker::HandleErrorCallback() {
-  Nan::HandleScope scope;
+void OpenAsyncWorker::OnError() {
+  Napi::Env env = Napi::Env(env);
+  Napi::HandleScope scope(env);
 
-  v8::Local<v8::Value> argv[] = {Nan::New(ErrorMessage()).ToLocalChecked(),
-                                 Nan::New(this->errorCode)};
-  v8::Local<v8::Value> error =
-      Nan::CallAsConstructor(Nan::New(FSUIPCError), 2, argv).ToLocalChecked();
+  Napi::Value argv[] = {Napi::Value::From(env, ErrorMessage()),
+                        Napi::Value::From(env, this->errorCode)};
+  Napi::Value error = Napi::Error::New(env, ErrorMessage()).Value();
 
-  Nan::New(resolver)->Reject(Nan::GetCurrentContext(), error);
+  resolver->Reject(error);
 }
 
 void CloseAsyncWorker::Execute() {
@@ -619,45 +634,52 @@ void CloseAsyncWorker::Execute() {
   this->fsuipc->ipc->Close();
 }
 
-void CloseAsyncWorker::HandleOKCallback() {
-  Nan::HandleScope scope;
+void CloseAsyncWorker::OnOK() {
+  Napi::Env env = Napi::Env(env);
+  Napi::HandleScope scope(env);
 
-  Nan::New(resolver)->Resolve(Nan::GetCurrentContext(), this->fsuipc->handle());
+  resolver->Resolve(this->fsuipc->handle());
 }
 
-NAN_MODULE_INIT(InitType) {
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
-  Nan::DefineOwnProperty(obj, Nan::New("Byte").ToLocalChecked(),
-                         Nan::New((int)Type::Byte), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("SByte").ToLocalChecked(),
-                         Nan::New((int)Type::SByte), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("Int16").ToLocalChecked(),
-                         Nan::New((int)Type::Int16), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("Int32").ToLocalChecked(),
-                         Nan::New((int)Type::Int32), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("Int64").ToLocalChecked(),
-                         Nan::New((int)Type::Int64), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("UInt16").ToLocalChecked(),
-                         Nan::New((int)Type::UInt16), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("UInt32").ToLocalChecked(),
-                         Nan::New((int)Type::UInt32), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("UInt64").ToLocalChecked(),
-                         Nan::New((int)Type::UInt64), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("Double").ToLocalChecked(),
-                         Nan::New((int)Type::Double), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("Single").ToLocalChecked(),
-                         Nan::New((int)Type::Single), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("ByteArray").ToLocalChecked(),
-                         Nan::New((int)Type::ByteArray), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("String").ToLocalChecked(),
-                         Nan::New((int)Type::String), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("BitArray").ToLocalChecked(),
-                         Nan::New((int)Type::BitArray), v8::ReadOnly);
+Napi::Object InitType(Napi::Env env, Napi::Object exports) {
+  Napi::Object obj = Napi::Object::New(env);
 
-  target->Set(Nan::GetCurrentContext(), Nan::New("Type").ToLocalChecked(), obj);
+  obj.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+          "Byte", Napi::Value::From(env, (int)Type::Byte), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "SByte", Napi::Value::From(env, (int)Type::SByte), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "Int16", Napi::Value::From(env, (int)Type::Int16), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "Int32", Napi::Value::From(env, (int)Type::Int32), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "Int64", Napi::Value::From(env, (int)Type::Int64), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "UInt16", Napi::Value::From(env, (int)Type::UInt16), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "UInt32", Napi::Value::From(env, (int)Type::UInt32), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "UInt64", Napi::Value::From(env, (int)Type::UInt64), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "Double", Napi::Value::From(env, (int)Type::Double), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "Single", Napi::Value::From(env, (int)Type::Single), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "ByteArray", Napi::Value::From(env, (int)Type::ByteArray),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "String", Napi::Value::From(env, (int)Type::String), napi_default),
+      Napi::PropertyDescriptor::Value(
+          "BitArray", Napi::Value::From(env, (int)Type::BitArray),
+          napi_default),
+  });
+
+  exports.Set(Napi::Value::From(env, "Type"), obj);
 }
 
-NAN_MODULE_INIT(InitError) {
+Napi::Object InitError(Napi::Env env, Napi::Object exports) {
+  Napi::Env env = Napi::Env(env);
   std::string code =
       "class FSUIPCError extends Error {"
       "  constructor (message, code) {"
@@ -668,111 +690,116 @@ NAN_MODULE_INIT(InitError) {
       "  }"
       "};"
       "FSUIPCError";
-  v8::Local<Nan::BoundScript> script =
-      Nan::CompileScript(Nan::New(code).ToLocalChecked()).ToLocalChecked();
-  v8::Local<v8::Object> errorFunc = Nan::RunScript(script)
-                                        .ToLocalChecked()
-                                        ->ToObject(Nan::GetCurrentContext())
-                                        .ToLocalChecked();
+
+  Napi::Object errorFunc = env.RunScript(code).ToObject();
 
   FSUIPCError.Reset(errorFunc);
 
-  target->Set(Nan::GetCurrentContext(),
-              Nan::New("FSUIPCError").ToLocalChecked(), errorFunc);
+  exports.Set(Napi::Value::From(env, "FSUIPCError"), errorFunc);
 
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
-  Nan::DefineOwnProperty(obj, Nan::New("OK").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::OK)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("OPEN").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::OPEN)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("NOFS").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::NOFS)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("REGMSG").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::REGMSG)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("ATOM").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::ATOM)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("MAP").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::MAP)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("VIEW").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::VIEW)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("VERSION").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::VERSION)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("WRONGFS").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::WRONGFS)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("NOTOPEN").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::NOTOPEN)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("NODATA").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::NODATA)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("TIMEOUT").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::TIMEOUT)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("SENDMSG").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::SENDMSG)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("DATA").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::DATA)), v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("RUNNING").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::RUNNING)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("SIZE").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Error::SIZE)), v8::ReadOnly);
+  Napi::Object obj = Napi::Object::New(env);
+  obj.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+          "OK", Napi::Value::From(env, static_cast<int>(Error::OK)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "OPEN", Napi::Value::From(env, static_cast<int>(Error::OPEN)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "NOFS", Napi::Value::From(env, static_cast<int>(Error::NOFS)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "REGMSG", Napi::Value::From(env, static_cast<int>(Error::REGMSG)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "ATOM", Napi::Value::From(env, static_cast<int>(Error::ATOM)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "MAP", Napi::Value::From(env, static_cast<int>(Error::MAP)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "VIEW", Napi::Value::From(env, static_cast<int>(Error::VIEW)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "VERSION", Napi::Value::From(env, static_cast<int>(Error::VERSION)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "WRONGFS", Napi::Value::From(env, static_cast<int>(Error::WRONGFS)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "NOTOPEN", Napi::Value::From(env, static_cast<int>(Error::NOTOPEN)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "NODATA", Napi::Value::From(env, static_cast<int>(Error::NODATA)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "TIMEOUT", Napi::Value::From(env, static_cast<int>(Error::TIMEOUT)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "SENDMSG", Napi::Value::From(env, static_cast<int>(Error::SENDMSG)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "DATA", Napi::Value::From(env, static_cast<int>(Error::DATA)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "RUNNING", Napi::Value::From(env, static_cast<int>(Error::RUNNING)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "SIZE", Napi::Value::From(env, static_cast<int>(Error::SIZE)),
+          napi_default),
+  });
 
-  target->Set(Nan::GetCurrentContext(), Nan::New("ErrorCode").ToLocalChecked(),
-              obj);
+  exports.Set(Napi::Value::From(env, "ErrorCode"), obj);
 }
 
-NAN_MODULE_INIT(InitSimulator) {
-  v8::Local<v8::Object> obj = Nan::New<v8::Object>();
-  Nan::DefineOwnProperty(obj, Nan::New("ANY").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::ANY)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FS98").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FS98)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FS2K").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FS2K)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("CFS2").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::CFS2)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("CFS1").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::CFS1)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FLY").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FLY)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FS2K2").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FS2K2)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FS2K4").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FS2K4)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FSX").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FSX)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("ESP").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::ESP)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("P3D").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::P3D)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("FSX64").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::FSX64)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("P3D64").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::P3D64)),
-                         v8::ReadOnly);
-  Nan::DefineOwnProperty(obj, Nan::New("MSFS").ToLocalChecked(),
-                         Nan::New(static_cast<int>(Simulator::MSFS)),
-                         v8::ReadOnly);
+Napi::Object InitSimulator(Napi::Env env, Napi::Object exports) {
+  Napi::Object obj = Napi::Object::New(env);
+  obj.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+          "ANY", Napi::Value::From(env, static_cast<int>(Simulator::ANY)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FS98", Napi::Value::From(env, static_cast<int>(Simulator::FS98)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FS2K", Napi::Value::From(env, static_cast<int>(Simulator::FS2K)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "CFS2", Napi::Value::From(env, static_cast<int>(Simulator::CFS2)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "CFS1", Napi::Value::From(env, static_cast<int>(Simulator::CFS1)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FLY", Napi::Value::From(env, static_cast<int>(Simulator::FLY)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FS2K2", Napi::Value::From(env, static_cast<int>(Simulator::FS2K2)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FS2K4", Napi::Value::From(env, static_cast<int>(Simulator::FS2K4)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FSX", Napi::Value::From(env, static_cast<int>(Simulator::FSX)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "ESP", Napi::Value::From(env, static_cast<int>(Simulator::ESP)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "P3D", Napi::Value::From(env, static_cast<int>(Simulator::P3D)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "FSX64", Napi::Value::From(env, static_cast<int>(Simulator::FSX64)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "P3D64", Napi::Value::From(env, static_cast<int>(Simulator::P3D64)),
+          napi_default),
+      Napi::PropertyDescriptor::Value(
+          "MSFS", Napi::Value::From(env, static_cast<int>(Simulator::MSFS)),
+          napi_default),
+  });
 
-  target->Set(Nan::GetCurrentContext(), Nan::New("Simulator").ToLocalChecked(),
-              obj);
+  exports.Set(Napi::Value::From(env, "Simulator"), obj);
 }
 
 }  // namespace FSUIPC
